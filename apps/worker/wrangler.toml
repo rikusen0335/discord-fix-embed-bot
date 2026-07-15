@@ -1,0 +1,18 @@
+# Cloudflare Worker 設定
+# KV namespace ID は Terraform 適用後に `terraform output kv_namespace_id` で取得して書き換えるか、
+# CI で sed 置換してください。
+name = "fixembed-worker"
+main = "src/index.ts"
+compatibility_date = "2026-07-01"
+
+[[kv_namespaces]]
+binding = "SETTINGS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[vars]
+DISCORD_CLIENT_ID = "REPLACE_WITH_APPLICATION_ID"
+
+# シークレットは `wrangler secret put` で設定:
+#   wrangler secret put BOT_TOKEN
+#   wrangler secret put DISCORD_CLIENT_SECRET
+#   wrangler secret put GATEWAY_SHARED_SECRET

@@ -1,0 +1,69 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run typecheck
+
+  deploy-worker:
+    needs: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      # Terraformが作成したKV namespace IDを注入
+      - name: Inject KV namespace ID
+        run: sed -i "s/REPLACE_WITH_KV_NAMESPACE_ID/${{ secrets.CF_KV_NAMESPACE_ID }}/" apps/worker/wrangler.toml
+      - name: Inject Discord client ID
+        run: sed -i "s/REPLACE_WITH_APPLICATION_ID/${{ secrets.DISCORD_CLIENT_ID }}/" apps/worker/wrangler.toml
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/worker
+          secrets: |
+            BOT_TOKEN
+            DISCORD_CLIENT_SECRET
+            GATEWAY_SHARED_SECRET
+        env:
+          BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CLIENT_SECRET: ${{ secrets.DISCORD_CLIENT_SECRET }}
+          GATEWAY_SHARED_SECRET: ${{ secrets.GATEWAY_SHARED_SECRET }}
+
+  # Gateway (Koyeb) は git push をトリガーに Koyeb 側で自動ビルド&デプロイされる
+  # (Terraformで定義した git deployment による)。ここでの追加ジョブは不要。
+
+  terraform:
+    # インフラ変更時のみ実行したい場合は paths フィルタを付ける
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform init
+      - run: terraform apply -auto-approve
+        env:
+          KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_github_repository: ${{ github.repository }}
+          TF_VAR_discord_token: ${{ secrets.DISCORD_BOT_TOKEN }}
+          TF_VAR_gateway_shared_secret: ${{ secrets.GATEWAY_SHARED_SECRET }}
+          TF_VAR_worker_url: ${{ secrets.WORKER_URL }}

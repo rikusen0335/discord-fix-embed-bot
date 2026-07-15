@@ -1,0 +1,13 @@
+{
+  "name": "discord-fix-embed-bot",
+  "private": true,
+  "workspaces": [
+    "apps/gateway",
+    "apps/worker"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck -w apps/gateway && npm run typecheck -w apps/worker",
+    "dev:gateway": "npm run dev -w apps/gateway",
+    "dev:worker": "npm run dev -w apps/worker"
+  }
+}
