@@ -309,6 +309,16 @@ app.post("/interactions", async (c) => {
       },
     });
   }
+  if (i.type === 2 && i.data?.name === "invite_link") {
+    const invite = `https://discord.com/oauth2/authorize?client_id=${c.env.DISCORD_CLIENT_ID}&scope=bot&permissions=536879104`;
+    return c.json({
+      type: 4,
+      data: {
+        content: `✉️ Botの招待リンク: ${invite}`,
+        flags: 64, // ephemeral (本人にのみ表示)
+      },
+    });
+  }
   return c.json({ type: 4, data: { content: "unknown command", flags: 64 } });
 });
 
@@ -324,6 +334,7 @@ app.get("/setup-commands", async (c) => {
       },
       body: JSON.stringify([
         { name: "dashboard", description: "設定ダッシュボードのURLを表示する(自分にのみ表示)" },
+        { name: "invite_link", description: "Botの招待リンクを表示する(自分にのみ表示)" },
       ]),
     },
   );
