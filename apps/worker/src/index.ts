@@ -290,20 +290,6 @@ app.get("/start", async (c) => {
   return c.text(`gateway: ${await res.text()}`);
 });
 
-app.get("/tokencheck", async (c) => {
-  const t = c.env.BOT_TOKEN;
-  const r = await fetch("https://discord.com/api/v10/users/@me", {
-    headers: { authorization: `Bot ${t}` },
-  });
-  return c.json({
-    apiStatus: r.status,
-    len: t.length,
-    head: t.slice(0, 8),
-    tail: t.slice(-4),
-    hasWhitespace: /\s/.test(t),
-  });
-});
-
 app.get("/status", async (c) => {
   const stub = c.env.GATEWAY_DO.get(c.env.GATEWAY_DO.idFromName("main"));
   const res = await stub.fetch("https://do/status");
