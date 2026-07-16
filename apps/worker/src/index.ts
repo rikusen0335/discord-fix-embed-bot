@@ -12,7 +12,6 @@ import {
 } from "./types";
 import { processMessageEvent } from "./process";
 import { verifyInteraction } from "./interactions";
-import { sendDM } from "./discord";
 import { loginPage, guildListPage, guildSettingsPage } from "./html";
 
 export { GatewayDO } from "./gateway";
@@ -301,18 +300,12 @@ app.post("/interactions", async (c) => {
   if (i.type === 1) return c.json({ type: 1 }); // PING
 
   if (i.type === 2 && i.data?.name === "dashboard") {
-    const userId = i.member?.user?.id ?? i.user?.id;
     const url = new URL(c.req.url).origin;
-    const sent = userId
-      ? await sendDM(c.env, userId, `🔧 FixEmbed 設定ダッシュボード: ${url}`)
-      : false;
     return c.json({
       type: 4,
       data: {
-        content: sent
-          ? "📬 ダッシュボードのURLをDMに送りました!"
-          : `DMを送れませんでした(DM拒否設定の可能性)。ダッシュボード: ${url}`,
-        flags: 64, // ephemeral
+        content: `🔧 FixEmbed 設定ダッシュボード: ${url}`,
+        flags: 64, // ephemeral (本人にのみ表示)
       },
     });
   }
