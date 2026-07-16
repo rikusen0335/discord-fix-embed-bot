@@ -1,5 +1,7 @@
 // Discord Gateway クライアント (Durable Object 常駐版)
 // discord.js を使わず、生の Gateway プロトコル (v10) を実装する。
+// 注意: 無料枠のDOストレージ書き込み制限(行数/日)があるため、
+// ストレージ書き込みは setAlarm のみに抑える(状態はすべてメモリ保持)。
 import type { Env, MessageEvent } from "./types";
 import { processMessageEvent } from "./process";
 
@@ -27,17 +29,19 @@ export class GatewayDO implements DurableObject {
   private connecting = false;
   private ready = false;
   private guildCount = 0;
+  private attempts = 0;
+  private lastAttemptAt = 0;
+  private events: string[] = []; // メモリのみ(DO退避で消えるが書き込み制限を消費しない)
 
   constructor(
     private state: DurableObjectState,
     private env: Env,
   ) {}
 
-  private async log(msg: string): Promise<void> {
+  private log(msg: string): void {
     console.log(msg);
-    const events = (await this.state.storage.get<string[]>("events")) ?? [];
-    events.push(`${new Date().toISOString()} ${msg}`);
-    await this.state.storage.put("events", events.slice(-40));
+    this.events.push(`${new Date().toISOString()} ${msg}`);
+    if (this.events.length > 50) this.events.shift();
   }
 
   // cron / 手動から叩かれる。接続がなければ張り直す。
@@ -48,39 +52,38 @@ export class GatewayDO implements DurableObject {
         ws: !!this.ws,
         ready: this.ready,
         guilds: this.guildCount,
-        sessionId: !!this.sessionId,
+        attempts: this.attempts,
         seq: this.seq,
-        events: (await this.state.storage.get<string[]>("events")) ?? [],
+        events: this.events,
       });
     }
     await this.ensureConnected();
-    const status = this.ws ? (this.ready ? "ready" : "connected") : "connecting";
-    await this.state.storage.setAlarm(Date.now() + 30_000);
-    return new Response(status);
+    try {
+      await this.state.storage.setAlarm(Date.now() + 60_000);
+    } catch (e) {
+      console.error("setAlarm failed:", e);
+    }
+    return new Response(this.ws ? (this.ready ? "ready" : "connected") : "connecting");
   }
 
-  // 死活監視: 30秒ごとに接続を確認
+  // 死活監視: 接続がなければ張り直す
   async alarm(): Promise<void> {
     await this.ensureConnected();
-    await this.state.storage.setAlarm(Date.now() + 30_000);
+    try {
+      await this.state.storage.setAlarm(Date.now() + 60_000);
+    } catch (e) {
+      console.error("setAlarm failed:", e);
+    }
   }
 
   private async ensureConnected(): Promise<void> {
     if (this.ws || this.connecting) return;
+    // 再接続バックオフ (identify レート制限と書き込み暴走の保護)
+    const backoff = Math.min(120_000, 5_000 * 2 ** Math.min(this.attempts, 5));
+    if (Date.now() - this.lastAttemptAt < backoff) return;
+    this.lastAttemptAt = Date.now();
+    this.attempts++;
     this.connecting = true;
-    // 前回セッションを永続ストレージから復元 (DO退避後のresume用)
-    if (!this.sessionId) {
-      const saved = await this.state.storage.get<{
-        sessionId: string;
-        resumeUrl: string;
-        seq: number | null;
-      }>("session");
-      if (saved) {
-        this.sessionId = saved.sessionId;
-        this.resumeUrl = saved.resumeUrl;
-        this.seq = saved.seq;
-      }
-    }
     try {
       const url = this.resumeUrl
         ? `${this.resumeUrl.replace(/^wss:/, "https:")}/?v=10&encoding=json`
@@ -96,36 +99,41 @@ export class GatewayDO implements DurableObject {
         void this.onMessage(String(ev.data));
       });
       ws.addEventListener("close", (ev) => {
-        void this.log(`closed: ${ev.code} ${ev.reason}`);
-        void this.cleanup(ev.code);
+        this.log(`closed: ${ev.code} ${ev.reason}`);
+        this.cleanup(ev.code);
       });
       ws.addEventListener("error", () => {
-        void this.log("ws error");
-        void this.cleanup();
+        this.log("ws error");
+        this.cleanup();
       });
-      await this.log("ws opened");
+      this.log(`ws opened (attempt ${this.attempts})`);
     } catch (e) {
-      await this.log(`connect failed: ${String(e)}`);
+      this.log(`connect failed: ${String(e)}`);
       this.resumeUrl = null;
     } finally {
       this.connecting = false;
     }
   }
 
-  private async cleanup(closeCode?: number): Promise<void> {
+  private cleanup(closeCode?: number): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
     this.ws = null;
     this.ready = false;
-    // 4004(認証失敗)等の致命的コードではセッションを破棄
+    // 4004(認証失敗)等の致命的コードではセッションを破棄して停止
     if (closeCode && [4004, 4010, 4011, 4012, 4013, 4014].includes(closeCode)) {
       this.sessionId = null;
       this.resumeUrl = null;
-      await this.state.storage.delete("session");
-      await this.log(`FATAL close ${closeCode}; check BOT_TOKEN / intents`);
+      this.log(`FATAL close ${closeCode}; check BOT_TOKEN / intents`);
       return;
     }
-    // それ以外は即再接続を試みる
+    // 4000番台の一部はresume不可
+    if (closeCode && [4007, 4009].includes(closeCode)) {
+      this.sessionId = null;
+      this.resumeUrl = null;
+      this.seq = null;
+    }
+    // バックオフ付きで再接続(即時1回だけ試み、以降はalarm/cronに任せる)
     void this.ensureConnected();
   }
 
@@ -149,12 +157,11 @@ export class GatewayDO implements DurableObject {
         if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
         this.heartbeatTimer = setInterval(() => {
           if (!this.lastAck) {
-            // ゾンビ接続 → 張り直し
-            console.log("no heartbeat ack; reconnecting");
+            this.log("no heartbeat ack; reconnecting");
             try {
               this.ws?.close(4000, "zombie");
             } catch {}
-            void this.cleanup();
+            this.cleanup();
             return;
           }
           this.lastAck = false;
@@ -216,25 +223,23 @@ export class GatewayDO implements DurableObject {
         this.sessionId = data.session_id;
         this.resumeUrl = data.resume_gateway_url;
         this.ready = true;
+        this.attempts = 0;
         this.guildCount = data.guilds.length;
-        await this.state.storage.put("session", {
-          sessionId: this.sessionId,
-          resumeUrl: this.resumeUrl,
-          seq: this.seq,
-        });
-        await this.log(`READY (${data.guilds.length} guilds)`);
+        this.log(`READY (${data.guilds.length} guilds)`);
         break;
       }
       case "RESUMED":
         this.ready = true;
-        await this.log("RESUMED");
+        this.attempts = 0;
+        this.log("RESUMED");
         break;
       case "GUILD_CREATE": {
         const g = d as { id: string; name?: string };
-        await this.env.SETTINGS.put(
-          `guild:${g.id}`,
-          JSON.stringify({ id: g.id, name: g.name ?? g.id }),
-        );
+        // KV無料枠(書き込み1000/日)保護: 値が変わる時だけ書く
+        const key = `guild:${g.id}`;
+        const val = JSON.stringify({ id: g.id, name: g.name ?? g.id });
+        const existing = await this.env.SETTINGS.get(key);
+        if (existing !== val) await this.env.SETTINGS.put(key, val);
         break;
       }
       case "GUILD_DELETE": {
@@ -280,7 +285,8 @@ export class GatewayDO implements DurableObject {
             avatar_url: avatarUrl,
           },
         };
-        await processMessageEvent(this.env, ev);
+        const result = await processMessageEvent(this.env, ev);
+        this.log(`message ${m.id}: ${JSON.stringify(result)}`);
         break;
       }
     }
