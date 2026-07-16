@@ -323,7 +323,7 @@ app.get("/setup-commands", async (c) => {
         "content-type": "application/json",
       },
       body: JSON.stringify([
-        { name: "dashboard", description: "設定ダッシュボードのURLをDMで受け取る" },
+        { name: "dashboard", description: "設定ダッシュボードのURLを表示する(自分にのみ表示)" },
       ]),
     },
   );
