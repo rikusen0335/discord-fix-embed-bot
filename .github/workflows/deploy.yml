@@ -30,19 +30,13 @@ jobs:
         run: sed -i "s/REPLACE_WITH_KV_NAMESPACE_ID/${{ secrets.CF_KV_NAMESPACE_ID }}/" apps/worker/wrangler.toml
       - name: Inject Discord client ID
         run: sed -i "s/REPLACE_WITH_APPLICATION_ID/${{ secrets.DISCORD_CLIENT_ID }}/" apps/worker/wrangler.toml
+      # シークレット(BOT_TOKEN等)はCloudflareダッシュボード側で管理し、
+      # デプロイでは上書きしない
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: apps/worker
-          secrets: |
-            BOT_TOKEN
-            DISCORD_CLIENT_SECRET
-            GATEWAY_SHARED_SECRET
-        env:
-          BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
-          DISCORD_CLIENT_SECRET: ${{ secrets.DISCORD_CLIENT_SECRET }}
-          GATEWAY_SHARED_SECRET: ${{ secrets.GATEWAY_SHARED_SECRET }}
 
   # Gateway (Koyeb) は git push をトリガーに Koyeb 側で自動ビルド&デプロイされる
   # (Terraformで定義した git deployment による)。ここでの追加ジョブは不要。
