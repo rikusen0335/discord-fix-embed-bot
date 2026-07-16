@@ -94,6 +94,23 @@ export async function executeWebhook(
   return res.ok;
 }
 
+/** ユーザーにDMを送る */
+export async function sendDM(
+  env: Env,
+  userId: string,
+  content: string,
+): Promise<boolean> {
+  const chRes = await rest(env, "POST", "/users/@me/channels", {
+    recipient_id: userId,
+  });
+  if (!chRes.ok) return false;
+  const ch = (await chRes.json()) as { id: string };
+  const msgRes = await rest(env, "POST", `/channels/${ch.id}/messages`, {
+    content,
+  });
+  return msgRes.ok;
+}
+
 function sanitizeUsername(name: string): string {
   // Discordの禁止語("discord"を含む名前など)と長さ制限に対応
   const cleaned = name.replace(/discord/gi, "d1scord").replace(/clyde/gi, "clyd3");

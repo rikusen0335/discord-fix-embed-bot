@@ -11,6 +11,8 @@ import {
   Session,
 } from "./types";
 import { processMessageEvent } from "./process";
+import { verifyInteraction } from "./interactions";
+import { sendDM } from "./discord";
 import { loginPage, guildListPage, guildSettingsPage } from "./html";
 
 export { GatewayDO } from "./gateway";
@@ -281,6 +283,58 @@ app.post("/guilds/:id", async (c) => {
   };
   await c.env.SETTINGS.put(`settings:${guildId}`, JSON.stringify(settings));
   return c.redirect(`/guilds/${guildId}?saved=1`);
+});
+
+/* ---------------- スラッシュコマンド (Interactions) ---------------- */
+
+app.post("/interactions", async (c) => {
+  const body = await c.req.raw.clone().text();
+  if (!(await verifyInteraction(c.env, c.req.raw, body))) {
+    return c.text("invalid request signature", 401);
+  }
+  const i = JSON.parse(body) as {
+    type: number;
+    data?: { name?: string };
+    member?: { user?: { id: string } };
+    user?: { id: string };
+  };
+  if (i.type === 1) return c.json({ type: 1 }); // PING
+
+  if (i.type === 2 && i.data?.name === "dashboard") {
+    const userId = i.member?.user?.id ?? i.user?.id;
+    const url = new URL(c.req.url).origin;
+    const sent = userId
+      ? await sendDM(c.env, userId, `🔧 FixEmbed 設定ダッシュボード: ${url}`)
+      : false;
+    return c.json({
+      type: 4,
+      data: {
+        content: sent
+          ? "📬 ダッシュボードのURLをDMに送りました!"
+          : `DMを送れませんでした(DM拒否設定の可能性)。ダッシュボード: ${url}`,
+        flags: 64, // ephemeral
+      },
+    });
+  }
+  return c.json({ type: 4, data: { content: "unknown command", flags: 64 } });
+});
+
+// コマンド登録 (冪等。デプロイ後に一度叩く)
+app.get("/setup-commands", async (c) => {
+  const res = await fetch(
+    `https://discord.com/api/v10/applications/${c.env.DISCORD_CLIENT_ID}/commands`,
+    {
+      method: "PUT",
+      headers: {
+        authorization: `Bot ${c.env.BOT_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify([
+        { name: "dashboard", description: "設定ダッシュボードのURLをDMで受け取る" },
+      ]),
+    },
+  );
+  return c.json({ registered: res.ok, status: res.status });
 });
 
 // Gateway DO の起動/監視用エンドポイント
