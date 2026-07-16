@@ -24,7 +24,10 @@ new_sqlite_classes = ["GatewayDO"]
 [triggers]
 crons = ["*/5 * * * *"]
 
+[observability]
+enabled = true
+
 # シークレットは `wrangler secret put` で設定:
 #   wrangler secret put BOT_TOKEN
 #   wrangler secret put DISCORD_CLIENT_SECRET
-#   wrangler secret put GATEWAY_SHARED_SECRET
+#   wrangler s

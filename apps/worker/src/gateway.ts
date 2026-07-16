@@ -25,29 +25,62 @@ export class GatewayDO implements DurableObject {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private lastAck = true;
   private connecting = false;
+  private ready = false;
+  private guildCount = 0;
 
   constructor(
     private state: DurableObjectState,
     private env: Env,
   ) {}
 
+  private async log(msg: string): Promise<void> {
+    console.log(msg);
+    const events = (await this.state.storage.get<string[]>("events")) ?? [];
+    events.push(`${new Date().toISOString()} ${msg}`);
+    await this.state.storage.put("events", events.slice(-40));
+  }
+
   // cron / 手動から叩かれる。接続がなければ張り直す。
-  async fetch(_req: Request): Promise<Response> {
+  async fetch(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    if (url.pathname === "/status") {
+      return Response.json({
+        ws: !!this.ws,
+        ready: this.ready,
+        guilds: this.guildCount,
+        sessionId: !!this.sessionId,
+        seq: this.seq,
+        events: (await this.state.storage.get<string[]>("events")) ?? [],
+      });
+    }
     await this.ensureConnected();
-    const status = this.ws ? "connected" : "connecting";
-    await this.state.storage.setAlarm(Date.now() + 60_000);
+    const status = this.ws ? (this.ready ? "ready" : "connected") : "connecting";
+    await this.state.storage.setAlarm(Date.now() + 30_000);
     return new Response(status);
   }
 
-  // 死活監視: 1分ごとに接続を確認
+  // 死活監視: 30秒ごとに接続を確認
   async alarm(): Promise<void> {
     await this.ensureConnected();
-    await this.state.storage.setAlarm(Date.now() + 60_000);
+    await this.state.storage.setAlarm(Date.now() + 30_000);
   }
 
   private async ensureConnected(): Promise<void> {
     if (this.ws || this.connecting) return;
     this.connecting = true;
+    // 前回セッションを永続ストレージから復元 (DO退避後のresume用)
+    if (!this.sessionId) {
+      const saved = await this.state.storage.get<{
+        sessionId: string;
+        resumeUrl: string;
+        seq: number | null;
+      }>("session");
+      if (saved) {
+        this.sessionId = saved.sessionId;
+        this.resumeUrl = saved.resumeUrl;
+        this.seq = saved.seq;
+      }
+    }
     try {
       const url = this.resumeUrl
         ? `${this.resumeUrl.replace(/^wss:/, "https:")}/?v=10&encoding=json`
@@ -63,27 +96,33 @@ export class GatewayDO implements DurableObject {
         void this.onMessage(String(ev.data));
       });
       ws.addEventListener("close", (ev) => {
-        console.log(`gateway closed: ${ev.code} ${ev.reason}`);
-        this.cleanup(ev.code);
+        void this.log(`closed: ${ev.code} ${ev.reason}`);
+        void this.cleanup(ev.code);
       });
-      ws.addEventListener("error", () => this.cleanup());
+      ws.addEventListener("error", () => {
+        void this.log("ws error");
+        void this.cleanup();
+      });
+      await this.log("ws opened");
     } catch (e) {
-      console.error("gateway connect failed:", e);
+      await this.log(`connect failed: ${String(e)}`);
       this.resumeUrl = null;
     } finally {
       this.connecting = false;
     }
   }
 
-  private cleanup(closeCode?: number): void {
+  private async cleanup(closeCode?: number): Promise<void> {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
     this.ws = null;
+    this.ready = false;
     // 4004(認証失敗)等の致命的コードではセッションを破棄
     if (closeCode && [4004, 4010, 4011, 4012, 4013, 4014].includes(closeCode)) {
       this.sessionId = null;
       this.resumeUrl = null;
-      console.error(`fatal gateway close code ${closeCode}; check BOT_TOKEN / intents`);
+      await this.state.storage.delete("session");
+      await this.log(`FATAL close ${closeCode}; check BOT_TOKEN / intents`);
       return;
     }
     // それ以外は即再接続を試みる
@@ -115,7 +154,7 @@ export class GatewayDO implements DurableObject {
             try {
               this.ws?.close(4000, "zombie");
             } catch {}
-            this.cleanup();
+            void this.cleanup();
             return;
           }
           this.lastAck = false;
@@ -176,11 +215,19 @@ export class GatewayDO implements DurableObject {
         };
         this.sessionId = data.session_id;
         this.resumeUrl = data.resume_gateway_url;
-        console.log(`gateway READY (${data.guilds.length} guilds)`);
+        this.ready = true;
+        this.guildCount = data.guilds.length;
+        await this.state.storage.put("session", {
+          sessionId: this.sessionId,
+          resumeUrl: this.resumeUrl,
+          seq: this.seq,
+        });
+        await this.log(`READY (${data.guilds.length} guilds)`);
         break;
       }
       case "RESUMED":
-        console.log("gateway RESUMED");
+        this.ready = true;
+        await this.log("RESUMED");
         break;
       case "GUILD_CREATE": {
         const g = d as { id: string; name?: string };

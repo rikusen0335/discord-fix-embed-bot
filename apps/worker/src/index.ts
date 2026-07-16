@@ -290,6 +290,12 @@ app.get("/start", async (c) => {
   return c.text(`gateway: ${await res.text()}`);
 });
 
+app.get("/status", async (c) => {
+  const stub = c.env.GATEWAY_DO.get(c.env.GATEWAY_DO.idFromName("main"));
+  const res = await stub.fetch("https://do/status");
+  return c.json((await res.json()) as Record<string, unknown>);
+});
+
 export default {
   fetch: app.fetch,
   // cronでDOを起こし、接続断からの自動復旧を担保する
