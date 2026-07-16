@@ -10,9 +10,10 @@ import {
   INSTAGRAM_HOSTS,
   Session,
 } from "./types";
-import { replaceLinks } from "./replace";
-import { deleteMessage, getOrCreateWebhook, executeWebhook } from "./discord";
+import { processMessageEvent } from "./process";
 import { loginPage, guildListPage, guildSettingsPage } from "./html";
+
+export { GatewayDO } from "./gateway";
 
 const app = new Hono<{ Bindings: Env; Variables: { session: Session; sessionId: string } }>();
 
@@ -56,34 +57,11 @@ app.use("/api/*", async (c, next) => {
 
 /* ---------------- Gateway からのイベント ---------------- */
 
+// (外部Gateway用の互換エンドポイント。DO常駐版では通常使われない)
 app.post("/api/event", async (c) => {
   const ev = await c.req.json<MessageEvent>();
-
-  const settings =
-    (await c.env.SETTINGS.get<GuildSettings>(`settings:${ev.guild_id}`, "json")) ??
-    DEFAULT_SETTINGS;
-  if (!settings.enabled) return c.json({ skipped: "disabled" });
-
-  const { content, changed } = replaceLinks(ev.content, settings);
-  if (!changed) return c.json({ skipped: "no-change" });
-
-  // 1) Webhook確保(権限がなければ何もしない=メッセージを消さない)
-  const hook = await getOrCreateWebhook(c.env, ev.channel_id);
-  if (!hook) return c.json({ error: "webhook-unavailable" }, 500);
-
-  // 2) 元メッセージを削除
-  const deleted = await deleteMessage(c.env, ev.channel_id, ev.message_id);
-  if (!deleted) return c.json({ error: "delete-failed" }, 500);
-
-  // 3) 本人風に再投稿
-  const username =
-    ev.author.display_name ?? ev.author.global_name ?? ev.author.username;
-  const posted = await executeWebhook(c.env, hook, ev.channel_id, {
-    content,
-    username,
-    avatarUrl: ev.author.avatar_url,
-  });
-  return c.json({ ok: posted });
+  const result = await processMessageEvent(c.env, ev);
+  return c.json(result, result.error ? 500 : 200);
 });
 
 app.post("/api/guilds/sync", async (c) => {
@@ -305,4 +283,18 @@ app.post("/guilds/:id", async (c) => {
   return c.redirect(`/guilds/${guildId}?saved=1`);
 });
 
-export default app;
+// Gateway DO の起動/監視用エンドポイント
+app.get("/start", async (c) => {
+  const stub = c.env.GATEWAY_DO.get(c.env.GATEWAY_DO.idFromName("main"));
+  const res = await stub.fetch("https://do/ensure");
+  return c.text(`gateway: ${await res.text()}`);
+});
+
+export default {
+  fetch: app.fetch,
+  // cronでDOを起こし、接続断からの自動復旧を担保する
+  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
+    const stub = env.GATEWAY_DO.get(env.GATEWAY_DO.idFromName("main"));
+    await stub.fetch("https://do/ensure");
+  },
+};

@@ -12,6 +12,18 @@ id = "REPLACE_WITH_KV_NAMESPACE_ID"
 [vars]
 DISCORD_CLIENT_ID = "REPLACE_WITH_APPLICATION_ID"
 
+# Discord Gateway 常駐用 Durable Object (無料プランはSQLiteバックエンド必須)
+[durable_objects]
+bindings = [{ name = "GATEWAY_DO", class_name = "GatewayDO" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GatewayDO"]
+
+# 5分ごとにDOを起こして接続断から自動復旧
+[triggers]
+crons = ["*/5 * * * *"]
+
 # シークレットは `wrangler secret put` で設定:
 #   wrangler secret put BOT_TOKEN
 #   wrangler secret put DISCORD_CLIENT_SECRET
